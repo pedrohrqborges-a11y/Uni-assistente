@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#050b1f">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href='data:application/manifest+json,{"name":"Uni","short_name":"Uni","start_url":"/","display":"standalone","background_color":"#050b1f","theme_color":"#050b1f"}'>
+<title>Uni</title>
+<style>
+  :root { --bg:#050b1f; --fg:#e6f4ff; --card:rgba(12,34,80,.55); --me:rgba(30,90,200,.45); --line:rgba(80,180,255,.3); --acc:#22d3ee; }
+  * { box-sizing: border-box; }
+  body::before { content:""; position:fixed; inset:0; z-index:-1; background-image:linear-gradient(rgba(80,180,255,.08) 1px,transparent 1px),linear-gradient(90deg,rgba(80,180,255,.08) 1px,transparent 1px); background-size:34px 34px; pointer-events:none; }
+  body { margin:0; height:100vh; height:100dvh; display:flex; font-family:system-ui,sans-serif; background:radial-gradient(ellipse at 50% 15%, #0b2a6b 0%, #050b1f 65%); color:var(--fg); overflow:hidden; }
+  #chatcol { flex:1; display:flex; flex-direction:column; min-width:0; height:100%; }
+  header { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+  #log { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }
+  .msg { backdrop-filter:blur(6px); border:1px solid var(--line); box-shadow:0 0 14px rgba(34,211,238,.12); max-width:85%; padding:10px 14px; border-radius:12px; background:var(--card); white-space:pre-wrap; word-wrap:break-word; }
+  .msg.me { align-self:flex-end; background:var(--me); }
+  pre { background:#0d1117; color:#e6edf3; padding:10px; border-radius:8px; overflow-x:auto; margin:8px 0 0; white-space:pre; }
+  .bar { display:flex; gap:6px; margin-top:4px; flex-wrap:wrap; }
+  button { cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:8px; padding:6px 10px; touch-action:manipulation; }
+  button.go { background:var(--acc); color:#031225; border-color:var(--acc); font-weight:600; box-shadow:0 0 12px rgba(34,211,238,.5); }
+  #inputrow { display:flex; gap:6px; padding:10px 12px; border-top:1px solid var(--line); align-items:flex-end; }
+  textarea { backdrop-filter:blur(6px); flex:1; min-width:0; resize:none; padding:8px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); font:inherit; font-size:16px; }
+  #facebox { display:flex; flex-direction:column; align-items:center; padding:6px 0 2px; flex-shrink:0; }
+  #orb { width:220px; height:220px; }
+  #facelabel { font-size:12px; letter-spacing:.35em; color:var(--acc); text-shadow:0 0 8px var(--acc); min-height:16px; margin-top:-6px; }
+  @media (max-height: 700px), (max-width: 600px) { #orb { width:130px; height:130px; } #log { padding:10px; } .msg { max-width:92%; } }
+  #chip { font-size:12px; padding:0 16px 6px; min-height:18px; }
+  #preview { display:none; width:50%; border-left:1px solid var(--line); flex-direction:column; }
+  #preview.on { display:flex; }
+  #preview iframe { flex:1; border:0; background:#fff; }
+  #phead { padding:8px; display:flex; gap:6px; border-bottom:1px solid var(--line); }
+  @media (max-width: 800px) { #preview.on { position:fixed; inset:0; width:100%; z-index:20; background:var(--bg); } }
+</style>
+</head>
+<body>
+<div id="chatcol">
+  <header>
+    <strong>Uni</strong>
+    <span><button id="vc" title="Conversa mãos-livres: você fala, ela responde falando e volta a ouvir">🎧 Conversa por voz</button>
+    <label><input type="checkbox" id="vozOn" checked> Falar respostas</label></span>
+  </header>
+  <div id="facebox">
+    <div id="face" data-s="idle"><canvas id="orb" width="440" height="440" aria-label="Uni"></canvas></div>
+    <div id="facelabel">UNI ONLINE</div>
+  </div>
+  <div id="log"></div>
+  <div id="chip"></div>
+  <div id="inputrow">
+    <input type="file" id="file" hidden accept=".txt,.md,.py,.js,.ts,.html,.css,.json,.csv,.java,.c,.cpp,.cs,.php,.sql,.xml,.yml,.yaml,.sh">
+    <button id="clip" title="Anexar arquivo de texto ou código">📎</button>
+    <button id="mic" title="Falar">🎤</button>
+    <textarea id="txt" rows="2" placeholder="Escreva ou fale com a Uni... (Enter envia, Shift+Enter quebra linha)"></textarea>
+    <button class="go" id="send">Enviar</button>
+  </div>
+</div>
+<div id="preview">
+  <div id="phead"><button id="dl">Baixar site</button><button id="close">Fechar</button></div>
+  <iframe id="frame" sandbox="allow-scripts allow-forms allow-modals"></iframe>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const log = $("log"), txt = $("txt");
+let history = [], attachment = null, currentSite = "";
+
+function setFace(state) {
+  $("face").dataset.s = state;
+  $("facelabel").textContent = { listening: "OUVINDO", thinking: "PENSANDO", speaking: "FALANDO" }[state] || "UNI ONLINE";
+}
+
+// ---------- orbe animado (anéis de energia que reagem ao estado)
+const orb = $("orb"), oc = orb.getContext("2d");
+const ESTADOS = { idle: { a: .05, v: .5 }, listening: { a: .10, v: 1.2 }, thinking: { a: .13, v: 2.6 }, speaking: { a: .20, v: 1.6 } };
+function drawOrb(ms) {
+  const t = ms / 1000, st = $("face").dataset.s, P = ESTADOS[st] || ESTADOS.idle;
+  const env = st === "speaking" ? .55 + .45 * Math.abs(Math.sin(t * 9) * Math.sin(t * 3.7)) : st === "listening" ? .75 + .25 * Math.sin(t * 4) : 1;
+  const W = orb.width, c = W / 2;
+  oc.clearRect(0, 0, W, W);
+  const g = oc.createRadialGradient(c, c, 0, c, c, W * .42);
+  g.addColorStop(0, `rgba(34,211,238,${st === "idle" ? .10 : .20})`); g.addColorStop(1, "rgba(34,211,238,0)");
+  oc.fillStyle = g; oc.fillRect(0, 0, W, W);
+  oc.globalCompositeOperation = "lighter";
+  oc.shadowColor = st === "thinking" ? "#818cf8" : "#22d3ee"; oc.shadowBlur = 14; oc.lineWidth = 2;
+  for (let i = 0; i < 6; i++) {
+    oc.beginPath();
+    for (let a = 0; a <= Math.PI * 2 + .05; a += .05) {
+      const base = W * (.27 + i * .014);
+      const r = base * (1 + P.a * env * (.6 * Math.sin(3 * a + t * P.v + i) + .4 * Math.sin(5 * a - t * P.v * 1.3 + i * 2)));
+      const x = c + r * Math.cos(a), y = c + r * Math.sin(a);
+      a === 0 ? oc.moveTo(x, y) : oc.lineTo(x, y);
+    }
+    oc.strokeStyle = st === "thinking" ? `rgba(129,140,248,${.35 + i * .06})` : `rgba(56,189,248,${.35 + i * .06})`;
+    oc.stroke();
+  }
+  oc.globalCompositeOperation = "source-over"; oc.shadowBlur = 0;
+  requestAnimationFrame(drawOrb);
+}
+requestAnimationFrame(drawOrb);
+
+// Mostra erros de JavaScript do site gerado direto na prévia e dá foco ao quadro para as teclas funcionarem
+const ERR_SCRIPT = '<script>window.addEventListener("error",function(e){var d=document.createElement("pre");d.style.cssText="position:fixed;left:0;right:0;bottom:0;margin:0;background:#300;color:#fbb;padding:6px;font:12px monospace;z-index:99999;white-space:pre-wrap";d.textContent="ERRO: "+e.message+" (linha "+e.lineno+")";(document.body||document.documentElement).appendChild(d);});window.addEventListener("message",function(e){var k=e.data;if(!k||!k.__key)return;var ev=new KeyboardEvent(k.type,{key:k.key,code:k.code,bubbles:true,cancelable:true});Object.defineProperty(ev,"keyCode",{get:function(){return k.keyCode;}});Object.defineProperty(ev,"which",{get:function(){return k.keyCode;}});(document.body||document).dispatchEvent(ev);});<\/script>';
+function withDebug(code) {
+  return /<head[^>]*>/i.test(code) ? code.replace(/<head[^>]*>/i, m => m + ERR_SCRIPT) : ERR_SCRIPT + code;
+}
+$("frame").addEventListener("load", () => { try { $("frame").contentWindow.focus(); } catch (e) {} });
+
+// Repassa as teclas para o site da prévia, mesmo que o foco esteja fora do quadro
+["keydown", "keyup"].forEach(tipo => document.addEventListener(tipo, e => {
+  if (!$("preview").classList.contains("on")) return;
+  const a = document.activeElement;
+  if (a && /^(TEXTAREA|INPUT)$/.test(a.tagName)) return;
+  $("frame").contentWindow.postMessage({ __key: 1, type: e.type, key: e.key, code: e.code, keyCode: e.keyCode }, "*");
+  if ([" ", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) e.preventDefault();
+}));
+
+function esc(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+function addMsg(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + (role === "user" ? "me" : "");
+  const parts = text.split(/```/);
+  parts.forEach((p, i) => {
+    if (i % 2 === 0) { if (p.trim()) { const s = document.createElement("span"); s.textContent = p.trim(); div.appendChild(s); } return; }
+    const nl = p.indexOf("\n");
+    const lang = (nl > -1 ? p.slice(0, nl) : "").trim().toLowerCase();
+    const code = (nl > -1 ? p.slice(nl + 1) : p).replace(/\n$/, "");
+    const pre = document.createElement("pre"); pre.textContent = code; div.appendChild(pre);
+    const bar = document.createElement("div"); bar.className = "bar";
+    const copy = document.createElement("button"); copy.textContent = "Copiar";
+    copy.onclick = () => { navigator.clipboard.writeText(code); copy.textContent = "Copiado!"; setTimeout(() => copy.textContent = "Copiar", 1500); };
+    bar.appendChild(copy);
+    if (lang === "html") {
+      const pv = document.createElement("button"); pv.textContent = "Ver prévia do site";
+      pv.onclick = () => { currentSite = code; $("frame").srcdoc = withDebug(code); $("preview").classList.add("on"); };
+      bar.appendChild(pv);
+    }
+    div.appendChild(bar);
+  });
+  log.appendChild(div); log.scrollTop = log.scrollHeight;
+  return div;
+}
+
+// ---------- voz (saída)
+let voice = null;
+function pickVoice() {
+  const v = speechSynthesis.getVoices().filter(x => x.lang.toLowerCase().startsWith("pt"));
+  const fem = /francisca|maria|luciana|fernanda|thalita|camila|vitoria|vitória|yara|brenda|leila|helena|feminin|female|google português/i;
+  voice = v.find(x => /pt-br/i.test(x.lang) && fem.test(x.name)) || v.find(x => fem.test(x.name)) || v.find(x => /pt-br/i.test(x.lang)) || v[0] || null;
+}
+speechSynthesis.onvoiceschanged = pickVoice; pickVoice();
+let endSpeech = null, voiceChat = false, busy = false;
+
+function stopSpeaking() {
+  speechSynthesis.cancel();
+  if (endSpeech) endSpeech();
+}
+// devolve uma Promise que só termina quando a fala acaba (ou é interrompida)
+async function speak(text) {
+  if (!voiceChat && !$("vozOn").checked) return;
+  const clean = text
+    .replace(/```[\s\S]*?```/g, " (o código está na tela). ")
+    .replace(/[\p{Extended_Pictographic}\p{Emoji_Modifier}\u200D\uFE0F\u20E3]/gu, "")
+    .replace(/[*_#`>~]+/g, "")
+    .replace(/\s+/g, " ").trim();
+  if (!clean) return;
+  stopSpeaking();
+  let fim;
+  const fimP = new Promise(res => { fim = () => { if (endSpeech === fim) { endSpeech = null; setFace("idle"); } res(); }; });
+  endSpeech = fim;
+  const u = new SpeechSynthesisUtterance(clean); u.lang = "pt-BR"; if (voice) u.voice = voice;
+  u.onstart = () => setFace("speaking");
+  u.onend = u.onerror = fim;
+  speechSynthesis.speak(u);
+  return fimP;
+}
+
+// ---------- voz (entrada)
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, listening = false;
+const MIC_ERROS = {
+  "not-allowed": "O navegador bloqueou o microfone. Clique no cadeado ao lado do endereço e permita o microfone.",
+  "service-not-allowed": "O navegador bloqueou o reconhecimento de voz. Permita o microfone nas configurações do site.",
+  "no-speech": "Não ouvi nada. Tente de novo e fale logo depois de clicar.",
+  "audio-capture": "Nenhum microfone encontrado. Confira se ele está conectado e é o dispositivo padrão do Windows.",
+  "network": "O reconhecimento de voz precisa de internet (ele usa os servidores do Google). Confira sua conexão.",
+  "language-not-supported": "Idioma não suportado por este navegador."
+};
+function micStatus(msg) { $("chip").textContent = msg; }
+function micReset() { listening = false; $("mic").textContent = "🎤"; setFace("idle"); }
+if (SR) {
+  rec = new SR(); rec.lang = "pt-BR"; rec.interimResults = false; rec.continuous = false;
+  rec.onstart = () => { setFace("listening"); micStatus("🎤 Ouvindo... fale agora"); };
+  rec.onresult = e => {
+    const t = e.results[0][0].transcript;
+    if (voiceChat) { txt.value = t; micStatus("🎧 Conversa por voz ativa"); send(); }
+    else { txt.value += (txt.value ? " " : "") + t; micStatus(""); }
+  };
+  rec.onend = () => {
+    micReset();
+    if ($("chip").textContent.startsWith("🎤")) micStatus("");
+    if (voiceChat) setTimeout(listenOnce, 300);        // silêncio ou fim da fala: volta a ouvir
+  };
+  rec.onerror = e => {
+    micReset();
+    if (voiceChat && (e.error === "no-speech" || e.error === "aborted")) return;
+    if (voiceChat) stopVoiceChat();
+    micStatus("⚠️ " + (MIC_ERROS[e.error] || ("Erro no microfone: " + e.error)));
+  };
+}
+const NO_SR = "⚠️ Este navegador não suporta reconhecimento de voz. Use o Google Chrome ou o Microsoft Edge (o Firefox e o Brave não suportam).";
+async function pedirMic() {
+  try {
+    // pede a permissão do microfone explicitamente, para o navegador mostrar o aviso
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    s.getTracks().forEach(t => t.stop());
+    return true;
+  } catch (err) {
+    micStatus("⚠️ Sem acesso ao microfone (" + err.name + "). Permita o microfone no cadeado ao lado do endereço.");
+    return false;
+  }
+}
+$("mic").onclick = async () => {
+  if (!rec) return micStatus(NO_SR);
+  if (voiceChat) return stopVoiceChat();
+  if (listening) { rec.stop(); return; }
+  stopSpeaking();
+  if (!(await pedirMic())) return;
+  try { rec.start(); listening = true; $("mic").textContent = "⏹"; }
+  catch (err) { micReset(); micStatus("⚠️ Não consegui iniciar o microfone: " + err.message); }
+};
+
+// ---------- conversa por voz (mãos-livres): ouve -> pensa -> fala -> volta a ouvir
+function listenOnce() {
+  if (!voiceChat || listening || busy || endSpeech) return;
+  try { rec.start(); listening = true; $("mic").textContent = "⏹"; } catch (err) { /* já estava ouvindo */ }
+}
+async function startVoiceChat() {
+  if (!rec) return micStatus(NO_SR);
+  if (!(await pedirMic())) return;
+  voiceChat = true;
+  $("vc").textContent = "⏹ Encerrar conversa";
+  micStatus("🎧 Conversa por voz ativa. Fale quando o orbe mostrar OUVINDO; clique no orbe para interrompê-la.");
+  stopSpeaking(); listenOnce();
+}
+function stopVoiceChat() {
+  voiceChat = false;
+  $("vc").textContent = "🎧 Conversa por voz";
+  try { rec.abort(); } catch (err) {}
+  stopSpeaking(); micReset();
+  if ($("chip").textContent.startsWith("🎧")) micStatus("");
+}
+$("vc").onclick = () => (voiceChat ? stopVoiceChat() : startVoiceChat());
+$("face").onclick = () => { if (voiceChat && endSpeech) stopSpeaking(); };
+
+// ---------- anexos
+$("clip").onclick = () => $("file").click();
+$("file").onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  if (f.size > 100 * 1024) { alert("Arquivo grande demais (máximo 100 KB)."); e.target.value = ""; return; }
+  const fr = new FileReader();
+  fr.onload = () => { attachment = { name: f.name, content: fr.result }; $("chip").textContent = "📎 " + f.name + " (será enviado com a próxima mensagem)"; };
+  fr.readAsText(f);
+  e.target.value = "";
+};
+
+// ---------- abrir sites no navegador (comando [[ABRIR: url]] escrito pela IA)
+function extractOpen(reply) {
+  const urls = [];
+  const clean = reply.replace(/\[\[\s*ABRIR\s*:\s*(\S+?)\s*\]\]/gi, (m, u) => {
+    try {
+      const x = new URL(u);
+      if ((x.protocol === "https:" || x.protocol === "http:") && !urls.includes(x.href) && urls.length < 3) urls.push(x.href);
+    } catch (e) {}
+    return "";
+  }).replace(/\n{3,}/g, "\n\n").trim();
+  return { clean, urls };
+}
+async function abrirSite(url) {
+  const host = new URL(url).hostname.replace(/^www\./, "");
+  try {
+    const r = await fetch("/api/open", { method: "POST", headers: { "Content-Type": "application/json", "X-Uni": "1" }, body: JSON.stringify({ url }) });
+    if (!r.ok) throw new Error("open");
+    micStatus("🌐 Abrindo " + host);
+  } catch (e) {
+    const w = window.open(url, "_blank", "noopener");   // reserva: no celular abre na aba do navegador
+    if (w) micStatus("🌐 Abrindo " + host);
+    else oferecerSites([url]);                          // se o Android bloquear pop-up automático, cria botão de 1 toque
+  }
+}
+function oferecerSites(urls) {   // abre com 1 toque direto no navegador (nunca bloqueado no celular)
+  const box = addMsg("assistant", "🌐 Toque para abrir:");
+  const bar = document.createElement("div"); bar.className = "bar";
+  urls.forEach(u => { const b = document.createElement("button"); b.textContent = "Abrir " + new URL(u).hostname.replace(/^www\./, ""); b.onclick = () => window.open(u, "_blank", "noopener") || abrirSite(u); bar.appendChild(b); });
+  box.appendChild(bar);
+}
+
+// ---------- envio
+async function send() {
+  let text = txt.value.trim();
+  if (!text && !attachment) return;
+  const hadFile = !!attachment;
+  let shown = text;
+  if (attachment) {
+    text += `\n\n[Arquivo anexado: ${attachment.name}]\n\`\`\`\n${attachment.content}\n\`\`\``;
+    shown += `\n📎 ${attachment.name}`;
+    attachment = null; $("chip").textContent = "";
+  }
+  txt.value = ""; stopSpeaking(); busy = true;
+  addMsg("user", shown);
+  history.push({ role: "user", content: text });
+  const wait = addMsg("assistant", "Pensando...");
+  setFace("thinking");
+  try {
+    const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: history, voice: voiceChat }) });
+    const data = await r.json();
+    wait.remove(); setFace("idle");
+    if (!r.ok) { addMsg("assistant", "⚠️ " + (data.error || "Erro desconhecido")); history.pop(); return; }
+    history.push({ role: "assistant", content: data.reply });
+    const consultas = [...(data.lidos || []), ...(data.clima || []).map(c => "clima de " + c)];
+    if (consultas.length) micStatus("🔎 Consultei: " + consultas.join(", "));
+    if (data.aviso) micStatus("ℹ️ " + data.aviso);
+    const { clean, urls } = extractOpen(data.reply);
+    const fala = clean || (urls.length ? "Abrindo o site." : "");
+    addMsg("assistant", fala);
+    // após anexo ou leitura de página, os sites só abrem com clique
+    if (urls.length) { if (hadFile || data.lidos) oferecerSites(urls); else urls.forEach(abrirSite); }
+    await speak(fala);
+  } catch (err) {
+    wait.remove(); setFace("idle"); addMsg("assistant", "⚠️ Não consegui falar com o servidor. O app.py está rodando?"); history.pop();
+  } finally {
+    busy = false;
+    if (voiceChat) listenOnce();
+  }
+}
+$("send").onclick = send;
+txt.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+$("close").onclick = () => $("preview").classList.remove("on");
+$("dl").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([currentSite], { type: "text/html" }));
+  a.download = "site.html"; a.click();
+};
+addMsg("assistant", "Oi, eu sou a Uni! Posso conversar, escrever código e criar sites. Como posso ajudar?");
+</script>
+</body>
+</html>
